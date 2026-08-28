@@ -30,6 +30,7 @@ export async function buildApp() {
   await app.register(multipart, { limits: { files: 1, fileSize: config.STORAGE_MAX_BYTES } })
   await app.register(cors, {
     origin: config.FRONTEND_ORIGIN.split(',').map((value) => value.trim()),
+    credentials: true,
     allowedHeaders: ['authorization', 'content-type', 'x-tenant-id', 'idempotency-key', 'x-demo-user-id'],
   })
   await app.register(rateLimit, { max: 120, timeWindow: '1 minute' })
