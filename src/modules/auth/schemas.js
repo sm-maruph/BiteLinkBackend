@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
 export const loginSchema = z.object({ email: z.string().email().transform((v) => v.toLowerCase()), password: z.string().min(8).max(128) })
+export const changePasswordSchema = z.object({ currentPassword:z.string().min(8).max(128), newPassword:z.string().min(8).max(128) }).refine(value=>value.currentPassword!==value.newPassword,{message:'New password must be different',path:['newPassword']})
 const slug = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(80)
 const templateKeys = ['editorial','ember','bistro','express','sage','world-plate','future-neon','future-hologram','future-paper','future-cyber','future-aurora','future-quantum','future-solar','future-lunar','future-bio','future-chrome','future-void','future-prism','future-synth','future-crystal','future-plasma','future-zen','future-circuit','future-cosmos','future-flux','future-oasis']
 const menuItemSchema = z.object({ name:z.string().trim().min(2).max(160), slug, description:z.string().trim().max(1000).optional(), imageUrl:z.string().url().optional().or(z.literal('')), price:z.coerce.number().min(0).max(10_000_000), preparationMinutes:z.coerce.number().int().min(0).max(1440).default(20), featured:z.boolean().default(false) })

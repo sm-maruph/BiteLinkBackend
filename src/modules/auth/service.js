@@ -26,14 +26,14 @@ export async function login(db, input, requestInfo) {
   }
   await db.query('update app.user_credentials set failed_attempts=0,locked_until=null where user_id=$1', [user.id])
   await db.query('update app.users set last_login_at=now() where id=$1', [user.id])
-  return { user: { id: user.id, email: user.email, displayName: user.display_name }, tenants: await listMemberships(db, user.id), ...(await issueSession(db, user, requestInfo)) }
+  return { user: { id: user.id, email: user.email, displayName: user.display_name, mustChangePassword:user.must_change_password, isPlatformAdmin:user.is_platform_admin }, tenants: await listMemberships(db, user.id), ...(await issueSession(db, user, requestInfo)) }
 }
 
 export async function refresh(db, rawToken, requestInfo) {
   const tokenHash = hashToken(rawToken)
   await db.query('begin')
   try {
-    const { rows } = await db.query(`select s.*,u.email,u.display_name,u.status from app.auth_sessions s join app.users u on u.id=s.user_id where s.refresh_token_hash=$1 for update`, [tokenHash])
+    const { rows } = await db.query(`select s.*,u.email,u.display_name,u.status,u.is_platform_admin,c.must_change_password from app.auth_sessions s join app.users u on u.id=s.user_id join app.user_credentials c on c.user_id=u.id where s.refresh_token_hash=$1 for update`, [tokenHash])
     const session = rows[0]
     if (!session || session.revoked_at || new Date(session.expires_at) <= new Date() || session.status !== 'active') {
       if (session?.family_id) await db.query('update app.auth_sessions set revoked_at=coalesce(revoked_at,now()) where family_id=$1', [session.family_id])
@@ -45,7 +45,7 @@ export async function refresh(db, rawToken, requestInfo) {
     const next = await issueSession(db, user, requestInfo, session.family_id)
     await db.query('update app.auth_sessions set replaced_by=(select id from app.auth_sessions where refresh_token_hash=$1) where id=$2', [hashToken(next.refreshToken), session.id])
     await db.query('commit')
-    return next
+    return { user: { id: user.id, email: user.email, displayName: user.display_name, mustChangePassword:session.must_change_password, isPlatformAdmin:session.is_platform_admin }, tenants: await listMemberships(db, user.id), ...next }
   } catch (error) {
     await db.query('rollback')
     throw error
@@ -54,6 +54,13 @@ export async function refresh(db, rawToken, requestInfo) {
 
 export async function logout(db, rawToken) {
   if (rawToken) await db.query('update app.auth_sessions set revoked_at=coalesce(revoked_at,now()) where refresh_token_hash=$1', [hashToken(rawToken)])
+}
+
+export async function changePassword(db,userId,input){
+  const {rows}=await db.query('select password_hash from app.user_credentials where user_id=$1',[userId])
+  if(!rows[0]||!(await verifyPassword(rows[0].password_hash,input.currentPassword))) return false
+  await db.query('update app.user_credentials set password_hash=$2,password_changed_at=now(),must_change_password=false,failed_attempts=0,locked_until=null where user_id=$1',[userId,await hashPassword(input.newPassword)])
+  return true
 }
 
 async function provisionAccount(db, input, requireEmpty) {

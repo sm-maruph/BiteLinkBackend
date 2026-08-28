@@ -5,7 +5,7 @@ export async function contextRoutes(app) {
     const restaurants = await client.query(
       `select r.id,r.name,r.slug,r.status,
               coalesce(jsonb_agg(jsonb_build_object('id',o.id,'name',o.name,'slug',o.slug,'status',o.status)
-                order by o.name) filter(where o.id is not null),'[]') outlets
+                order by (o.status='active') desc,o.name) filter(where o.id is not null),'[]') outlets
          from app.restaurants r left join app.outlets o on o.tenant_id=r.tenant_id and o.restaurant_id=r.id
         where r.tenant_id=$1 group by r.id order by r.name`, [request.context.tenantId],
     )

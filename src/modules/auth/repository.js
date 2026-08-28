@@ -1,6 +1,6 @@
 export async function findLoginUser(db, email) {
   const { rows } = await db.query(
-    `select u.id, u.email, u.display_name, u.status, c.password_hash, c.failed_attempts, c.locked_until
+    `select u.id, u.email, u.display_name, u.status, u.is_platform_admin, c.password_hash, c.failed_attempts, c.locked_until, c.must_change_password
        from app.users u join app.user_credentials c on c.user_id=u.id
       where u.email=$1 and u.auth_provider='bitelink'`,
     [email],

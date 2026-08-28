@@ -1,6 +1,24 @@
 import { withTransaction } from '../db.js'
+import { createHash, randomBytes } from 'node:crypto'
 
 export async function workspaceRoutes(app) {
+  app.post('/tables', async (request, reply) => withTransaction(request.context, async (client) => {
+    const {restaurantId,outletId,tableNumber,capacity=4}=request.body||{}
+    const normalizedNumber=String(tableNumber||'').trim()
+    const normalizedCapacity=Number(capacity)
+    if(!restaurantId||!outletId||!normalizedNumber) return reply.code(400).send({error:'restaurant_outlet_and_table_required'})
+    if(normalizedNumber.length>20||!/^[a-zA-Z0-9_-]+$/.test(normalizedNumber)) return reply.code(400).send({error:'invalid_table_number'})
+    if(!Number.isInteger(normalizedCapacity)||normalizedCapacity<1||normalizedCapacity>50) return reply.code(400).send({error:'invalid_table_capacity'})
+    const access=await client.query("select app.has_permission($1,'tables.write',$2,$3) allowed",[request.context.tenantId,restaurantId,outletId])
+    if(!access.rows[0]?.allowed) return reply.code(403).send({error:'permission_denied'})
+    const outlet=await client.query('select id from app.outlets where tenant_id=$1 and restaurant_id=$2 and id=$3 and status=$4',[request.context.tenantId,restaurantId,outletId,'active'])
+    if(!outlet.rows[0]) return reply.code(404).send({error:'outlet_not_found'})
+    const qrHash=createHash('sha256').update(randomBytes(32)).digest('hex')
+    const created=await client.query(`insert into app.dining_tables(tenant_id,restaurant_id,outlet_id,table_number,qr_token_hash,capacity,status)
+      values($1,$2,$3,$4,$5,$6,'available') returning id,table_number,capacity,status`,[request.context.tenantId,restaurantId,outletId,normalizedNumber,qrHash,normalizedCapacity])
+    return reply.code(201).send(created.rows[0])
+  }))
+
   app.get('/workspace', async (request, reply) => withTransaction(request.context, async (client) => {
     const { restaurantId, outletId } = request.query
     if (!restaurantId || !outletId) return reply.code(400).send({ error: 'restaurant_and_outlet_required' })
@@ -36,5 +54,22 @@ export async function workspaceRoutes(app) {
     const completedRevenue=orders.rows.filter(o=>o.status==='completed').reduce((sum,o)=>sum+Number(o.grand_total),0)
     return {restaurant:restaurant.rows[0],menu:menu.rows,offers:offers.rows,tables:tables.rows,orders:orders.rows,payments:payments.rows,requests:requests.rows,team:team.rows,
       metrics:{revenueToday:completedRevenue,ordersToday:orders.rows.length,activeTables:tables.rows.filter(t=>!['available','disabled'].includes(t.status)).length,totalTables:tables.rows.length,averageOrder:orders.rows.length?orders.rows.reduce((s,o)=>s+Number(o.grand_total),0)/orders.rows.length:0}}
+  }))
+
+  app.get('/restaurant-analytics', async (request, reply) => withTransaction(request.context, async (client) => {
+    const { restaurantId } = request.query
+    if (!restaurantId) return reply.code(400).send({ error: 'restaurant_required' })
+    const restaurant = await client.query('select id from app.restaurants where tenant_id=$1 and id=$2',[request.context.tenantId,restaurantId])
+    if(!restaurant.rows[0]) return reply.code(404).send({error:'restaurant_not_found'})
+    const outlets=await client.query('select id,slug,name from app.outlets where tenant_id=$1 and restaurant_id=$2 order by name',[request.context.tenantId,restaurantId])
+    const orders=await client.query('select outlet_id,status,grand_total,placed_at from app.orders where tenant_id=$1 and restaurant_id=$2',[request.context.tenantId,restaurantId])
+    const tables=await client.query('select outlet_id,status,capacity from app.dining_tables where tenant_id=$1 and restaurant_id=$2',[request.context.tenantId,restaurantId])
+    const payments=await client.query('select status,amount from app.payments where tenant_id=$1 and restaurant_id=$2',[request.context.tenantId,restaurantId])
+    const team=await client.query("select count(distinct user_id)::int total from app.tenant_memberships where tenant_id=$1 and status='active'",[request.context.tenantId])
+    const outletRows=outlets.rows.map(outlet=>{const scopedOrders=orders.rows.filter(row=>row.outlet_id===outlet.id),scopedTables=tables.rows.filter(row=>row.outlet_id===outlet.id);return {slug:outlet.slug,name:outlet.name,revenue:scopedOrders.filter(row=>['served','completed'].includes(row.status)).reduce((sum,row)=>sum+Number(row.grand_total),0),orders:scopedOrders.length,activeTables:scopedTables.filter(row=>!['available','disabled'].includes(row.status)).length,totalTables:scopedTables.filter(row=>row.status!=='disabled').length,seats:scopedTables.reduce((sum,row)=>sum+Number(row.capacity||0),0)}})
+    const days=Array.from({length:7},(_,index)=>{const date=new Date();date.setUTCHours(0,0,0,0);date.setUTCDate(date.getUTCDate()-(6-index));return date})
+    const trend=days.map(date=>{const end=new Date(date);end.setUTCDate(end.getUTCDate()+1);const rows=orders.rows.filter(row=>{const placed=new Date(row.placed_at);return placed>=date&&placed<end});return {date:date.toISOString().slice(0,10),revenue:rows.filter(row=>['served','completed'].includes(row.status)).reduce((sum,row)=>sum+Number(row.grand_total),0),orders:rows.length}})
+    const statuses=Object.entries(orders.rows.reduce((counts,row)=>({...counts,[row.status]:(counts[row.status]||0)+1}),{})).map(([name,value])=>({name,value}))
+    return {outlets:outletRows,trend,statuses,summary:{revenue:outletRows.reduce((sum,row)=>sum+row.revenue,0),orders:orders.rows.length,averageOrder:orders.rows.length?orders.rows.reduce((sum,row)=>sum+Number(row.grand_total),0)/orders.rows.length:0,activeTables:outletRows.reduce((sum,row)=>sum+row.activeTables,0),totalTables:outletRows.reduce((sum,row)=>sum+row.totalTables,0),verifiedPayments:payments.rows.filter(row=>row.status==='verified').reduce((sum,row)=>sum+Number(row.amount),0),teamMembers:team.rows[0]?.total||0}}
   }))
 }

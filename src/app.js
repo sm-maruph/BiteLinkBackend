@@ -16,6 +16,7 @@ import { contextRoutes } from './routes/context.js'
 import { workspaceRoutes } from './routes/workspace.js'
 import { staffRoutes } from './routes/staff.js'
 import { organizationRoutes } from './routes/organization.js'
+import { platformRoutes } from './routes/platform.js'
 
 export async function buildApp() {
   const frontendOrigins = [...new Set([
@@ -46,6 +47,7 @@ export async function buildApp() {
   })
 
   await app.register(authRoutes, { prefix: '/api/auth' })
+  await app.register(async platformApi=>{platformApi.addHook('preHandler',authenticate);await platformApi.register(platformRoutes)},{prefix:'/api/platform'})
 
   await app.register(async (publicApi) => {
     await publicApi.register(rateLimit, { max: 60, timeWindow: '1 minute' })
