@@ -18,6 +18,11 @@ import { staffRoutes } from './routes/staff.js'
 import { organizationRoutes } from './routes/organization.js'
 
 export async function buildApp() {
+  const frontendOrigins = [...new Set([
+    ...config.FRONTEND_ORIGIN.split(','),
+    'https://bitelinkqr.onrender.com',
+  ].map((value) => value.trim().replace(/\/$/, '')).filter(Boolean))]
+
   const app = Fastify({
     logger: config.NODE_ENV === 'development' ? { transport: { target: 'pino-pretty' } } : true,
     trustProxy: true,
@@ -29,7 +34,7 @@ export async function buildApp() {
   await app.register(cookie)
   await app.register(multipart, { limits: { files: 1, fileSize: config.STORAGE_MAX_BYTES } })
   await app.register(cors, {
-    origin: config.FRONTEND_ORIGIN.split(',').map((value) => value.trim()),
+    origin: frontendOrigins,
     credentials: true,
     allowedHeaders: ['authorization', 'content-type', 'x-tenant-id', 'idempotency-key', 'x-demo-user-id'],
   })
