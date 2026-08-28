@@ -1,0 +1,40 @@
+import { z } from 'zod'
+
+export const uuid = z.string().uuid()
+export const pagination = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+})
+export const menuQuery = pagination.extend({
+  restaurantId: uuid,
+  outletId: uuid.optional(),
+  categoryId: uuid.optional(),
+})
+export const orderBody = z.object({
+  restaurantId: uuid,
+  outletId: uuid,
+  tableId: uuid,
+  sessionId: uuid,
+  notes: z.string().max(1000).optional(),
+  items: z.array(z.object({ menuItemId: uuid, quantity: z.number().int().min(1).max(99) })).min(1).max(100),
+})
+export const statusBody = z.object({
+  status: z.enum(['confirmed', 'preparing', 'ready', 'serving', 'served', 'completed', 'cancelled', 'rejected']),
+  note: z.string().max(500).optional(),
+})
+export const roleBody = z.object({ code:z.string().regex(/^[a-z][a-z0-9_]{1,49}$/), name:z.string().trim().min(2).max(100), description:z.string().trim().max(500).optional(), scope:z.enum(['tenant','restaurant','outlet']), permissions:z.array(z.string().min(1).max(100)).min(1).max(100), restaurantId:uuid.optional(), outletId:uuid.optional() })
+export const roleAssignmentBody = z.object({ membershipId:uuid, roleId:uuid, restaurantId:uuid.optional(), outletId:uuid.optional() })
+export const restaurantBody=z.object({name:z.string().trim().min(2).max(160),slug:z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(80),templateKey:z.enum(['editorial','ember','future-neon','bistro','express','sage','world-plate']).default('editorial'),themeKey:z.enum(['coral','saffron','olive']).default('coral')})
+export const outletBody=z.object({restaurantId:uuid,name:z.string().trim().min(2).max(160),slug:z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(80),addressLine:z.string().trim().max(300).optional(),city:z.string().trim().min(2).max(100).default('Dhaka')})
+export const themeBody=z.object({templateKey:z.enum(['editorial','ember','future-neon','bistro','express','sage','world-plate']),themeKey:z.enum(['coral','saffron','olive'])})
+
+export function parse(schema, value) {
+  const result = schema.safeParse(value)
+  if (!result.success) {
+    const error = new Error('Validation failed')
+    error.statusCode = 400
+    error.details = result.error.flatten()
+    throw error
+  }
+  return result.data
+}
