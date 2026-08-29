@@ -18,6 +18,8 @@ export async function workspaceRoutes(app) {
       values($1,$2,$3,$4,$5,$6,'available') returning id,table_number,capacity,status`,[request.context.tenantId,restaurantId,outletId,normalizedNumber,qrHash,normalizedCapacity])
     return reply.code(201).send(created.rows[0])
   }))
+  app.patch('/tables/:id',async(request,reply)=>withTransaction(request.context,async client=>{const id=request.params.id,{tableNumber,capacity,status}=request.body||{};const row=await client.query('select restaurant_id,outlet_id from app.dining_tables where tenant_id=$1 and id=$2',[request.context.tenantId,id]);if(!row.rows[0])return reply.code(404).send({error:'table_not_found'});const access=await client.query("select app.has_permission($1,'tables.write',$2,$3) allowed",[request.context.tenantId,row.rows[0].restaurant_id,row.rows[0].outlet_id]);if(!access.rows[0]?.allowed)return reply.code(403).send({error:'permission_denied'});const updated=await client.query("update app.dining_tables set table_number=coalesce($3,table_number),capacity=coalesce($4,capacity),status=coalesce($5,status),updated_at=now() where tenant_id=$1 and id=$2 returning id,table_number,capacity,status",[request.context.tenantId,id,tableNumber||null,capacity||null,status||null]);return updated.rows[0]}))
+  app.delete('/tables/:id',async(request,reply)=>withTransaction(request.context,async client=>{const id=request.params.id,row=await client.query('select restaurant_id,outlet_id from app.dining_tables where tenant_id=$1 and id=$2',[request.context.tenantId,id]);if(!row.rows[0])return reply.code(404).send({error:'table_not_found'});const access=await client.query("select app.has_permission($1,'tables.write',$2,$3) allowed",[request.context.tenantId,row.rows[0].restaurant_id,row.rows[0].outlet_id]);if(!access.rows[0]?.allowed)return reply.code(403).send({error:'permission_denied'});await client.query('delete from app.dining_tables where tenant_id=$1 and id=$2',[request.context.tenantId,id]);return reply.code(204).send()}))
 
   app.get('/workspace', async (request, reply) => withTransaction(request.context, async (client) => {
     const { restaurantId, outletId } = request.query
@@ -37,7 +39,7 @@ export async function workspaceRoutes(app) {
       coalesce(omi.availability,i.availability) availability,i.preparation_minutes,i.tags,i.is_featured,c.name category_name
       from app.menu_items i join app.menu_categories c on c.id=i.category_id and c.tenant_id=i.tenant_id
       left join app.outlet_menu_items omi on omi.menu_item_id=i.id and omi.outlet_id=$3 and omi.tenant_id=i.tenant_id
-      where i.tenant_id=$1 and i.restaurant_id=$2 order by c.sort_order,i.sort_order`,[request.context.tenantId,restaurantId,outletId])
+      where i.tenant_id=$1 and i.restaurant_id=$2 and (i.outlet_id is null or i.outlet_id=$3) order by c.sort_order,i.sort_order`,[request.context.tenantId,restaurantId,outletId])
     const offers = await client.query('select * from app.offers where tenant_id=$1 and restaurant_id=$2 and (outlet_id is null or outlet_id=$3) order by created_at desc',[request.context.tenantId,restaurantId,outletId])
     const tables = await client.query('select id,table_number,capacity,status from app.dining_tables where tenant_id=$1 and restaurant_id=$2 and outlet_id=$3 order by table_number',[request.context.tenantId,restaurantId,outletId])
     const orders = await client.query(`select o.*,t.table_number,rv.rating review_rating,rv.comment review_comment,coalesce(string_agg(oi.item_name_snapshot||' x '||oi.quantity,'; ' order by oi.created_at),'') items
@@ -48,9 +50,9 @@ export async function workspaceRoutes(app) {
       join app.dining_tables t on t.id=s.table_id and t.tenant_id=s.tenant_id where p.tenant_id=$1 and p.restaurant_id=$2 and p.outlet_id=$3 order by p.created_at desc`,[request.context.tenantId,restaurantId,outletId])
     const requests = await client.query(`select q.*,t.table_number from app.service_requests q join app.dining_tables t on t.id=q.table_id and t.tenant_id=q.tenant_id
       where q.tenant_id=$1 and q.restaurant_id=$2 and q.outlet_id=$3 order by q.created_at desc`,[request.context.tenantId,restaurantId,outletId])
-    const team = await client.query(`select u.id,u.display_name,u.email,m.status,coalesce(string_agg(distinct ro.name,', '),'Member') roles
+    const team = await client.query(`select u.id,m.id membership_id,u.display_name,u.email,m.status,coalesce(string_agg(distinct ro.name,', '),'Member') roles
       from app.tenant_memberships m join app.users u on u.id=m.user_id left join app.membership_roles mr on mr.membership_id=m.id and mr.tenant_id=m.tenant_id
-      left join app.roles ro on ro.id=mr.role_id where m.tenant_id=$1 group by u.id,m.status order by u.display_name`,[request.context.tenantId])
+      left join app.roles ro on ro.id=mr.role_id where m.tenant_id=$1 group by u.id,m.id,m.status order by u.display_name`,[request.context.tenantId])
     const completedRevenue=orders.rows.filter(o=>o.status==='completed').reduce((sum,o)=>sum+Number(o.grand_total),0)
     return {restaurant:restaurant.rows[0],menu:menu.rows,offers:offers.rows,tables:tables.rows,orders:orders.rows,payments:payments.rows,requests:requests.rows,team:team.rows,
       metrics:{revenueToday:completedRevenue,ordersToday:orders.rows.length,activeTables:tables.rows.filter(t=>!['available','disabled'].includes(t.status)).length,totalTables:tables.rows.length,averageOrder:orders.rows.length?orders.rows.reduce((s,o)=>s+Number(o.grand_total),0)/orders.rows.length:0}}

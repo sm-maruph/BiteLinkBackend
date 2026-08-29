@@ -15,6 +15,13 @@ export async function contextRoutes(app) {
          join app.roles ro on ro.id=mr.role_id
         where m.tenant_id=$1 and m.user_id=$2 and m.status='active'`, [request.context.tenantId,request.context.userId],
     )
-    return { tenantId: request.context.tenantId, restaurants: restaurants.rows, roles: roles.rows }
+    const permissions = await client.query(
+      `select distinct rp.permission_code::text code
+         from app.tenant_memberships m
+         join app.membership_roles mr on mr.membership_id=m.id and mr.tenant_id=m.tenant_id
+         join app.role_permissions rp on rp.role_id=mr.role_id
+        where m.tenant_id=$1 and m.user_id=$2 and m.status='active'`, [request.context.tenantId, request.context.userId],
+    )
+    return { tenantId: request.context.tenantId, restaurants: restaurants.rows, roles: roles.rows, permissions: permissions.rows.map(row => row.code) }
   }))
 }

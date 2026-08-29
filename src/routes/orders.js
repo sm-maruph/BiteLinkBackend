@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { withTransaction } from '../db.js'
 import { orderBody, pagination, parse, statusBody, uuid } from '../schemas.js'
+import { z } from 'zod'
 
 const hashBody = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 
@@ -97,6 +98,21 @@ export async function orderRoutes(app) {
       if(body.status==='confirmed') await client.query("select app.notify_order_staff($1,'orders.cook','order_approved','Order approved for kitchen')",[id])
       if(body.status==='ready') await client.query("select app.notify_order_staff($1,'orders.serve','order_ready','Order ready to serve')",[id])
       if(body.status==='served') await client.query("select app.notify_order_staff($1,'orders.complete','order_served','Order served')",[id])
+      return rows[0]
+    })
+  })
+
+  app.patch('/payments/:id/status', async (request, reply) => {
+    const id = parse(uuid, request.params.id)
+    const body = parse(z.object({status:z.enum(['verified','rejected'])}), request.body)
+    return withTransaction(request.context, async (client) => {
+      const current=await client.query('select * from app.payments where tenant_id=$1 and id=$2 for update',[request.context.tenantId,id])
+      if(!current.rows[0]) return reply.code(404).send({error:'payment_not_found'})
+      if(!['pending','submitted'].includes(current.rows[0].status)) return reply.code(409).send({error:'payment_already_processed'})
+      const allowed=await client.query("select app.has_permission($1,'payments.verify',$2,$3) allowed",[request.context.tenantId,current.rows[0].restaurant_id,current.rows[0].outlet_id])
+      if(!allowed.rows[0]?.allowed) return reply.code(403).send({error:'permission_denied'})
+      const {rows}=await client.query(`update app.payments set status=$3,verified_at=case when $3='verified' then now() else null end,verified_by=case when $3='verified' then $4 else null end where tenant_id=$1 and id=$2 returning *`,[request.context.tenantId,id,body.status,request.context.userId])
+      await client.query('insert into app.payment_events(tenant_id,payment_id,event_type,status,actor_user_id) values($1,$2,$3,$4,$5)',[request.context.tenantId,id,'reviewed',body.status,request.context.userId])
       return rows[0]
     })
   })

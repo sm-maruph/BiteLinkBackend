@@ -23,13 +23,21 @@ export async function organizationRoutes(app){
     const {rows}=await client.query("insert into app.outlets(tenant_id,restaurant_id,name,slug,address_line,city,status) values($1,$2,$3,$4,$5,$6,'setup') returning *",[request.context.tenantId,body.restaurantId,body.name,body.slug,body.addressLine,body.city])
     return reply.code(201).send(rows[0])
   }))
-  app.get('/subscription-usage',async request=>withTransaction(request.context,async client=>{const subscription=await client.query(`select p.name plan_name,e.limit_value,s.status from billing.subscriptions s join billing.plans p on p.id=s.plan_id left join billing.plan_entitlements e on e.plan_id=p.id and e.feature_key='outlets.max' where s.tenant_id=$1 and s.status in ('trialing','active','past_due','paused') order by s.created_at desc limit 1`,[request.context.tenantId]);const usage=await client.query("select count(*)::int total,count(*) filter(where status='active')::int active,count(*) filter(where status='setup')::int pending from app.outlets where tenant_id=$1 and status<>'closed'",[request.context.tenantId]);return {...subscription.rows[0],...usage.rows[0]} }))
+  app.get('/subscription-usage',async request=>withTransaction(request.context,async client=>{const subscription=await client.query(`select p.name plan_name,e.limit_value,s.status,s.trial_ends_at,s.current_period_end from billing.subscriptions s join billing.plans p on p.id=s.plan_id left join billing.plan_entitlements e on e.plan_id=p.id and e.feature_key='outlets.max' where s.tenant_id=$1 and s.status in ('trialing','active','past_due','paused') order by s.created_at desc limit 1`,[request.context.tenantId]);const usage=await client.query("select count(*)::int total,count(*) filter(where status='active')::int active,count(*) filter(where status='setup')::int pending from app.outlets where tenant_id=$1 and status<>'closed'",[request.context.tenantId]);return {...subscription.rows[0],...usage.rows[0]} }))
   app.patch('/outlets/:id/approve',async(request,reply)=>withTransaction(request.context,async client=>{const id=parse(uuid,request.params.id);const admin=await client.query('select app.is_platform_admin() allowed');if(!admin.rows[0]?.allowed)return reply.code(403).send({error:'platform_admin_required'});const {rows}=await client.query("update app.outlets set status='active' where tenant_id=$1 and id=$2 and status='setup' returning *",[request.context.tenantId,id]);return rows[0]||reply.code(404).send({error:'pending_outlet_not_found'})}))
   app.patch('/restaurants/:id/theme',async(request,reply)=>withTransaction(request.context,async client=>{
     const id=parse(uuid,request.params.id),body=parse(themeBody,request.body)
     const allowed=await client.query("select app.has_permission($1,'restaurant.manage',$2,null) allowed",[request.context.tenantId,id])
     if(!allowed.rows[0]?.allowed)return reply.code(403).send({error:'permission_denied'})
     const {rows}=await client.query('update app.restaurant_themes set template_key=$3,theme_key=$4,published_at=now() where tenant_id=$1 and restaurant_id=$2 returning *',[request.context.tenantId,id,body.templateKey,body.themeKey])
+    return rows[0]||reply.code(404).send({error:'restaurant_not_found'})
+  }))
+  app.patch('/restaurants/:id/logo',async(request,reply)=>withTransaction(request.context,async client=>{
+    const id=parse(uuid,request.params.id),logoUrl=String(request.body?.logoUrl||''),outletId=request.body?.outletId||null
+    if(!logoUrl)return reply.code(400).send({error:'logo_url_required'})
+    const allowed=await client.query("select app.has_permission($1,'restaurant.manage',$2,null) or ($3::uuid is not null and app.has_permission($1,'outlet.manage',$2,$3::uuid)) allowed",[request.context.tenantId,id,outletId])
+    if(!allowed.rows[0]?.allowed)return reply.code(403).send({error:'permission_denied'})
+    const {rows}=await client.query('update app.restaurants set logo_url=$3 where tenant_id=$1 and id=$2 returning id,logo_url',[request.context.tenantId,id,logoUrl])
     return rows[0]||reply.code(404).send({error:'restaurant_not_found'})
   }))
 }
