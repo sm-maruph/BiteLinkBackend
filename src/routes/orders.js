@@ -88,7 +88,7 @@ export async function orderRoutes(app) {
     return withTransaction(request.context, async (client) => {
       const current = await client.query('select * from app.orders where tenant_id=$1 and id=$2 for update', [request.context.tenantId, id])
       if (!current.rows[0]) return reply.code(404).send({ error: 'order_not_found' })
-      const transitions={pending:{confirmed:'orders.approve',rejected:'orders.approve',cancelled:'orders.approve'},confirmed:{preparing:'orders.cook',cancelled:'orders.approve'},preparing:{ready:'orders.ready',cancelled:'orders.approve'},ready:{serving:'orders.serve',served:'orders.serve'},serving:{served:'orders.serve'},served:{completed:'orders.complete'}}
+      const transitions={pending:{confirmed:'orders.approve',rejected:'orders.approve',cancelled:'orders.approve'},confirmed:{preparing:'orders.cook',cancelled:'orders.approve'},preparing:{confirmed:'orders.cook',ready:'orders.ready',cancelled:'orders.approve'},ready:{preparing:'orders.ready',serving:'orders.serve',served:'orders.serve'},serving:{ready:'orders.serve',served:'orders.serve'},served:{ready:'orders.serve',completed:'orders.complete'}}
       const requiredPermission=transitions[current.rows[0].status]?.[body.status]
       if (!requiredPermission) return reply.code(409).send({error:'invalid_order_status_transition',from:current.rows[0].status,to:body.status})
       const allowed = await client.query('select app.has_permission($1,$2,$3,$4) allowed', [request.context.tenantId,requiredPermission,current.rows[0].restaurant_id,current.rows[0].outlet_id])

@@ -9,5 +9,6 @@ const migrations=[
   {name:'009_staff_temporary_credentials.sql',check:"select exists(select 1 from information_schema.columns where table_schema='app' and table_name='user_credentials' and column_name='must_change_password') applied"},
   {name:'010_outlet_limits_and_approval.sql',check:"select exists(select 1 from billing.plan_entitlements where feature_key='outlets.max') applied"},
   {name:'011_staff_credentials_grant.sql',check:"select has_table_privilege('bitelink_api','app.user_credentials','INSERT') applied"},
+  {name:'012_customer_order_privacy.sql',check:"select exists(select 1 from information_schema.columns where table_schema='app' and table_name='orders' and column_name='customer_token_hash') applied"},
 ]
 try{for(const migration of migrations){const state=await pool.query(migration.check);if(state.rows[0].applied){console.log(`skip ${migration.name}`);continue}const sql=await readFile(resolve('../BiteLinkQR/database/migrations',migration.name),'utf8');await pool.query(sql);console.log(`applied ${migration.name}`)}}finally{await pool.end()}

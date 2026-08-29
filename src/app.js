@@ -38,7 +38,7 @@ export async function buildApp() {
     origin: frontendOrigins,
     credentials: true,
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['authorization', 'content-type', 'x-tenant-id', 'idempotency-key', 'x-demo-user-id'],
+    allowedHeaders: ['authorization', 'content-type', 'x-tenant-id', 'idempotency-key', 'x-demo-user-id', 'x-customer-session'],
   })
   await app.register(rateLimit, { max: 120, timeWindow: '1 minute' })
 

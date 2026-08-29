@@ -10,6 +10,9 @@ const publicOrderBody = z.object({
 export async function publicRoutes(app) {
   app.get('/restaurants/:restaurantSlug/outlets/:outletSlug/tables/:tableNumber/orders', async (request, reply) => {
     const { restaurantSlug, outletSlug, tableNumber } = request.params
+    const customerToken=String(request.headers['x-customer-session']||'')
+    if(!z.string().uuid().safeParse(customerToken).success)return {items:[]}
+    const customerTokenHash=createHash('sha256').update(customerToken).digest('hex')
     const result = await pool.query(
       `select ord.id,ord.order_number,ord.status,ord.subtotal,ord.discount_total,ord.grand_total,ord.placed_at,
               coalesce(jsonb_agg(jsonb_build_object('id',oi.menu_item_id,'name',oi.item_name_snapshot,'price',oi.unit_price_snapshot,'quantity',oi.quantity)
@@ -18,22 +21,25 @@ export async function publicRoutes(app) {
          join app.dining_tables t on t.tenant_id=r.tenant_id and t.restaurant_id=r.id and t.outlet_id=o.id
          join app.orders ord on ord.tenant_id=r.tenant_id and ord.restaurant_id=r.id and ord.outlet_id=o.id and ord.table_id=t.id
          left join app.order_items oi on oi.tenant_id=ord.tenant_id and oi.order_id=ord.id
-        where r.slug=$1 and o.slug=$2 and t.table_number=$3
+        where r.slug=$1 and o.slug=$2 and t.table_number=$3 and ord.customer_token_hash=$4
         group by ord.id order by ord.placed_at desc limit 50`,
-      [restaurantSlug, outletSlug, tableNumber],
+      [restaurantSlug, outletSlug, tableNumber, customerTokenHash],
     )
     return { items: result.rows }
   })
 
   app.get('/restaurants/:restaurantSlug/outlets/:outletSlug/tables/:tableNumber/orders/latest', async (request, reply) => {
     const { restaurantSlug, outletSlug, tableNumber } = request.params
+    const customerToken=String(request.headers['x-customer-session']||'')
+    if(!z.string().uuid().safeParse(customerToken).success)return reply.code(404).send({error:'order_not_found'})
+    const customerTokenHash=createHash('sha256').update(customerToken).digest('hex')
     const result = await pool.query(
       `select ord.id,ord.order_number,ord.status,ord.subtotal,ord.discount_total,ord.grand_total,ord.placed_at
          from app.restaurants r join app.outlets o on o.tenant_id=r.tenant_id and o.restaurant_id=r.id
          join app.dining_tables t on t.tenant_id=r.tenant_id and t.restaurant_id=r.id and t.outlet_id=o.id
          join app.orders ord on ord.tenant_id=r.tenant_id and ord.restaurant_id=r.id and ord.outlet_id=o.id and ord.table_id=t.id
-        where r.slug=$1 and o.slug=$2 and t.table_number=$3 order by ord.placed_at desc limit 1`,
-      [restaurantSlug, outletSlug, tableNumber],
+        where r.slug=$1 and o.slug=$2 and t.table_number=$3 and ord.customer_token_hash=$4 order by ord.placed_at desc limit 1`,
+      [restaurantSlug, outletSlug, tableNumber, customerTokenHash],
     )
     const order = result.rows[0] || null
     if (!order) return reply.code(404).send({ error: 'order_not_found' })
@@ -43,6 +49,9 @@ export async function publicRoutes(app) {
   app.post('/restaurants/:restaurantSlug/outlets/:outletSlug/tables/:tableNumber/orders', async (request, reply) => {
     const parsed = publicOrderBody.safeParse(request.body)
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_order', details: parsed.error.issues })
+    const customerToken=String(request.headers['x-customer-session']||'')
+    if(!z.string().uuid().safeParse(customerToken).success)return reply.code(400).send({error:'customer_session_required'})
+    const customerTokenHash=createHash('sha256').update(customerToken).digest('hex')
     const { restaurantSlug, outletSlug, tableNumber } = request.params
     const client = await pool.connect()
     try {
@@ -91,9 +100,9 @@ export async function publicRoutes(app) {
       await client.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [`${place.tenant_id}:${place.outlet_id}:orders`])
       const number = await client.query('select coalesce(max(order_number),0)+1 value from app.orders where tenant_id=$1 and outlet_id=$2', [place.tenant_id, place.outlet_id])
       const created = await client.query(
-        `insert into app.orders (tenant_id,restaurant_id,outlet_id,table_id,session_id,order_number,subtotal,discount_total,tax_total,service_charge_total,grand_total,notes)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,0,0,$9,$10) returning *`,
-        [place.tenant_id, place.restaurant_id, place.outlet_id, place.table_id, sessionId, number.rows[0].value, subtotal, discount, subtotal - discount, parsed.data.notes],
+        `insert into app.orders (tenant_id,restaurant_id,outlet_id,table_id,session_id,order_number,subtotal,discount_total,tax_total,service_charge_total,grand_total,notes,customer_token_hash)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,0,0,$9,$10,$11) returning *`,
+        [place.tenant_id, place.restaurant_id, place.outlet_id, place.table_id, sessionId, number.rows[0].value, subtotal, discount, subtotal - discount, parsed.data.notes, customerTokenHash],
       )
       for (const line of discountedLines) await client.query(
         `insert into app.order_items (tenant_id,order_id,menu_item_id,item_name_snapshot,description_snapshot,unit_price_snapshot,quantity,discount_snapshot,line_total)
