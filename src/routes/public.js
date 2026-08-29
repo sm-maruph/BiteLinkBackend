@@ -1,6 +1,79 @@
-import { withPublicTransaction } from '../db.js'
+import { createHash, randomUUID } from 'node:crypto'
+import { z } from 'zod'
+import { pool, withPublicTransaction } from '../db.js'
+
+const publicOrderBody = z.object({
+  items: z.array(z.object({ menuItemId: z.string().uuid(), quantity: z.number().int().min(1).max(99) })).min(1).max(100),
+  notes: z.string().trim().max(1000).optional(),
+})
 
 export async function publicRoutes(app) {
+  app.post('/restaurants/:restaurantSlug/outlets/:outletSlug/tables/:tableNumber/orders', async (request, reply) => {
+    const parsed = publicOrderBody.safeParse(request.body)
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_order', details: parsed.error.issues })
+    const { restaurantSlug, outletSlug, tableNumber } = request.params
+    const client = await pool.connect()
+    try {
+      await client.query('begin')
+      const location = await client.query(
+        `select r.tenant_id,r.id restaurant_id,o.id outlet_id,o.tax_rate,o.service_charge_rate,t.id table_id
+           from app.restaurants r join app.outlets o on o.tenant_id=r.tenant_id and o.restaurant_id=r.id
+           join app.dining_tables t on t.tenant_id=r.tenant_id and t.restaurant_id=r.id and t.outlet_id=o.id
+          where r.slug=$1 and o.slug=$2 and t.table_number=$3 and t.status<>'disabled'`,
+        [restaurantSlug, outletSlug, tableNumber],
+      )
+      if (!location.rows[0]) { await client.query('rollback'); return reply.code(404).send({ error: 'table_not_found' }) }
+      const place = location.rows[0]
+      const ids = parsed.data.items.map((item) => item.menuItemId)
+      const menu = await client.query(
+        `select i.id,i.name,i.description,coalesce(omi.price_override,i.base_price) price,
+                coalesce(omi.availability,i.availability) availability
+           from app.menu_items i left join app.outlet_menu_items omi
+             on omi.tenant_id=i.tenant_id and omi.menu_item_id=i.id and omi.outlet_id=$3
+          where i.tenant_id=$1 and i.restaurant_id=$2 and i.id=any($4::uuid[])`,
+        [place.tenant_id, place.restaurant_id, place.outlet_id, ids],
+      )
+      if (menu.rows.length !== new Set(ids).size || menu.rows.some((item) => item.availability !== 'available')) {
+        await client.query('rollback'); return reply.code(409).send({ error: 'menu_item_unavailable' })
+      }
+      const session = await client.query(
+        `select id from app.table_sessions where tenant_id=$1 and table_id=$2 and status='active' order by opened_at desc limit 1`,
+        [place.tenant_id, place.table_id],
+      )
+      let sessionId = session.rows[0]?.id
+      if (!sessionId) {
+        const tokenHash = createHash('sha256').update(randomUUID()).digest('hex')
+        const createdSession = await client.query(
+          `insert into app.table_sessions (tenant_id,restaurant_id,outlet_id,table_id,public_token_hash)
+           values ($1,$2,$3,$4,$5) returning id`,
+          [place.tenant_id, place.restaurant_id, place.outlet_id, place.table_id, tokenHash],
+        )
+        sessionId = createdSession.rows[0].id
+      }
+      const byId = new Map(menu.rows.map((item) => [item.id, item]))
+      const lines = parsed.data.items.map((item) => ({ ...item, ...byId.get(item.menuItemId) }))
+      const subtotal = lines.reduce((sum, item) => sum + Number(item.price) * item.quantity, 0)
+      const discount = subtotal > 700 ? 50 : 0
+      await client.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [`${place.tenant_id}:${place.outlet_id}:orders`])
+      const number = await client.query('select coalesce(max(order_number),0)+1 value from app.orders where tenant_id=$1 and outlet_id=$2', [place.tenant_id, place.outlet_id])
+      const created = await client.query(
+        `insert into app.orders (tenant_id,restaurant_id,outlet_id,table_id,session_id,order_number,subtotal,discount_total,tax_total,service_charge_total,grand_total,notes)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,0,0,$9,$10) returning *`,
+        [place.tenant_id, place.restaurant_id, place.outlet_id, place.table_id, sessionId, number.rows[0].value, subtotal, discount, subtotal - discount, parsed.data.notes],
+      )
+      for (const line of lines) await client.query(
+        `insert into app.order_items (tenant_id,order_id,menu_item_id,item_name_snapshot,description_snapshot,unit_price_snapshot,quantity,line_total)
+         values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [place.tenant_id, created.rows[0].id, line.menuItemId, line.name, line.description, line.price, line.quantity, Number(line.price) * line.quantity],
+      )
+      await client.query('commit')
+      return reply.code(201).send({ ...created.rows[0], items: lines })
+    } catch (error) {
+      await client.query('rollback')
+      throw error
+    } finally { client.release() }
+  })
+
   app.get('/demo/platform-overview', async () => withPublicTransaction(async (client) => {
     const totals = await client.query(
       `select count(distinct id)::int restaurants, count(distinct outlet_id)::int active_outlets
