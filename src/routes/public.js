@@ -6,8 +6,56 @@ const publicOrderBody = z.object({
   items: z.array(z.object({ menuItemId: z.string().uuid(), quantity: z.number().int().min(1).max(99) })).min(1).max(100),
   notes: z.string().trim().max(1000).optional(),
 })
+const publicPaymentBody=z.object({
+  method:z.enum(['bangla_qr','cash','card','other']),
+  reference:z.string().trim().min(2).max(160),
+})
 
 export async function publicRoutes(app) {
+  const customerOrder = async (request) => {
+    const customerToken=String(request.headers['x-customer-session']||'')
+    if(!z.string().uuid().safeParse(customerToken).success)return null
+    const customerTokenHash=createHash('sha256').update(customerToken).digest('hex')
+    const {restaurantSlug,outletSlug,tableNumber,orderId}=request.params
+    if(!z.string().uuid().safeParse(orderId).success)return null
+    const result=await pool.query(`select ord.*,t.table_number
+      from app.restaurants r join app.outlets o on o.tenant_id=r.tenant_id and o.restaurant_id=r.id
+      join app.dining_tables t on t.tenant_id=r.tenant_id and t.restaurant_id=r.id and t.outlet_id=o.id
+      join app.orders ord on ord.tenant_id=r.tenant_id and ord.restaurant_id=r.id and ord.outlet_id=o.id and ord.table_id=t.id
+      where r.slug=$1 and o.slug=$2 and t.table_number=$3 and ord.id=$4 and ord.customer_token_hash=$5`,
+      [restaurantSlug,outletSlug,tableNumber,orderId,customerTokenHash])
+    return result.rows[0]||null
+  }
+
+  app.get('/restaurants/:restaurantSlug/outlets/:outletSlug/tables/:tableNumber/orders/:orderId/payment',async(request,reply)=>{
+    const order=await customerOrder(request)
+    if(!order)return reply.code(404).send({error:'order_not_found'})
+    const result=await pool.query(`select id,order_id,amount,currency,method,status,customer_reference,submitted_at,verified_at,created_at
+      from app.payments where tenant_id=$1 and order_id=$2 order by created_at desc limit 1`,[order.tenant_id,order.id])
+    return {payment:result.rows[0]||null}
+  })
+
+  app.post('/restaurants/:restaurantSlug/outlets/:outletSlug/tables/:tableNumber/orders/:orderId/payment',async(request,reply)=>{
+    const parsed=publicPaymentBody.safeParse(request.body)
+    if(!parsed.success)return reply.code(400).send({error:'invalid_payment',details:parsed.error.issues})
+    const order=await customerOrder(request)
+    if(!order)return reply.code(404).send({error:'order_not_found'})
+    if(!['served','completed'].includes(order.status))return reply.code(409).send({error:'order_not_served'})
+    const client=await pool.connect()
+    try{
+      await client.query('begin')
+      await client.query('select pg_advisory_xact_lock(hashtextextended($1,0))',[`${order.tenant_id}:${order.id}:payment`])
+      const existing=await client.query(`select * from app.payments where tenant_id=$1 and order_id=$2 and status in ('pending','submitted','verified') order by created_at desc limit 1`,[order.tenant_id,order.id])
+      if(existing.rows[0]){await client.query('commit');return existing.rows[0]}
+      const created=await client.query(`insert into app.payments(tenant_id,restaurant_id,outlet_id,session_id,order_id,amount,method,status,customer_reference,submitted_at,metadata)
+        values($1,$2,$3,$4,$5,$6,$7,'submitted',$8,now(),jsonb_build_object('tableNumber',$9,'orderNumber',$10)) returning *`,
+        [order.tenant_id,order.restaurant_id,order.outlet_id,order.session_id,order.id,order.grand_total,parsed.data.method,parsed.data.reference,order.table_number,order.order_number])
+      await client.query(`insert into app.payment_events(tenant_id,payment_id,event_type,status,payload) values($1,$2,'customer_submitted','submitted',jsonb_build_object('reference',$3))`,[order.tenant_id,created.rows[0].id,parsed.data.reference])
+      await client.query('commit')
+      return reply.code(201).send(created.rows[0])
+    }catch(error){await client.query('rollback');throw error}finally{client.release()}
+  })
+
   app.get('/restaurants/:restaurantSlug/outlets/:outletSlug/tables/:tableNumber/orders', async (request, reply) => {
     const { restaurantSlug, outletSlug, tableNumber } = request.params
     const customerToken=String(request.headers['x-customer-session']||'')

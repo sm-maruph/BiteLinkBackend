@@ -13,5 +13,6 @@ const migrations=[
   {name:'013_role_permissions_write_policy.sql',check:"select exists(select 1 from pg_policies where schemaname='app' and tablename='role_permissions' and policyname='role_permissions_tenant_manage') applied"},
   {name:'014_edit_system_roles.sql',check:"select coalesce((select position('r.code' in qual)>0 and position('owner' in qual)>0 from pg_policies where schemaname='app' and tablename='role_permissions' and policyname='role_permissions_tenant_manage'),false) applied"},
   {name:'015_order_staff_visibility.sql',check:"select not exists(select 1 from app.roles r join app.role_permissions rp on rp.role_id=r.id where r.code='order_staff' and rp.permission_code in ('orders.serve','orders.complete')) applied"},
+  {name:'016_customer_bill_payments.sql',check:"select exists(select 1 from information_schema.columns where table_schema='app' and table_name='payments' and column_name='order_id') applied"},
 ]
 try{for(const migration of migrations){const state=await pool.query(migration.check);if(state.rows[0].applied){console.log(`skip ${migration.name}`);continue}const sql=await readFile(resolve('../BiteLinkQR/database/migrations',migration.name),'utf8');await pool.query(sql);console.log(`applied ${migration.name}`)}}finally{await pool.end()}
