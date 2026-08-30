@@ -188,11 +188,13 @@ export async function staffRoutes(app) {
       )
         return reply.code(403).send({ error: "permission_denied" });
       const existing = await client.query(
-        "select is_system from app.roles where tenant_id=$1 and id=$2",
+        "select code from app.roles where tenant_id=$1 and id=$2",
         [request.context.tenantId, id],
       );
       if (!existing.rows[0])
         return reply.code(404).send({ error: "role_not_found" });
+      if (existing.rows[0].code === "owner")
+        return reply.code(409).send({ error: "owner_role_read_only" });
       const known = await client.query(
         "select code from app.permissions where code=any($1::citext[])",
         [body.permissions],
@@ -200,7 +202,7 @@ export async function staffRoutes(app) {
       if (known.rowCount !== new Set(body.permissions).size)
         return reply.code(400).send({ error: "unknown_permission" });
       const { rows } = await client.query(
-        "update app.roles set code=$3,name=$4,description=$5,scope=$6,updated_at=now() where tenant_id=$1 and id=$2 returning *",
+        "update app.roles set code=$3,name=$4,description=$5,scope=$6 where tenant_id=$1 and id=$2 returning *",
         [
           request.context.tenantId,
           id,
