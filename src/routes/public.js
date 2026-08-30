@@ -229,6 +229,7 @@ export async function publicRoutes(app) {
     )
     const counts = new Map(popularity.rows.map((item,index)=>[item.menu_item_id,{order_count:item.order_count,quantity_ordered:item.quantity_ordered,popular_now:index<5&&item.quantity_ordered>0}]))
     const now = new Date(), activeOffers = result.offers.filter(offer=>(!offer.starts_at||new Date(offer.starts_at)<=now)&&(!offer.ends_at||new Date(offer.ends_at)>=now))
+    result.offers = activeOffers
     const targetedIds = new Set(activeOffers.flatMap(offer=>offer.rules?.menuItemIds||offer.rules?.itemIds||[]))
     result.menu = result.menu.map(item=>{const itemOffers=activeOffers.filter(offer=>(offer.rules?.menuItemIds||offer.rules?.itemIds||[]).includes(item.id));return {...item,...(counts.get(item.id)||{order_count:0,quantity_ordered:0,popular_now:false}),on_offer:itemOffers.length>0,offers:itemOffers.map(offer=>({id:offer.id,name:offer.name,description:offer.description,offerType:offer.offer_type,menuItemIds:offer.rules?.menuItemIds||[],comboPrice:offer.rules?.comboPrice,tiers:offer.rules?.tiers||[]}))}})
     result.comboOffers=activeOffers.filter(offer=>offer.offer_type==='combo').map(offer=>{const ids=offer.rules?.menuItemIds||[],items=result.menu.filter(item=>ids.includes(item.id)),regularPrice=items.reduce((sum,item)=>sum+Number(item.price),0),comboPrice=Number(offer.rules?.comboPrice||offer.discount_value);return {id:offer.id,name:offer.name,description:offer.description,comboPrice,regularPrice,savings:Math.max(0,regularPrice-comboPrice),items}}).filter(offer=>offer.items.length>=2)
