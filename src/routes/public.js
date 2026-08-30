@@ -30,8 +30,10 @@ export async function publicRoutes(app) {
   app.get('/restaurants/:restaurantSlug/outlets/:outletSlug/tables/:tableNumber/orders/:orderId/payment',async(request,reply)=>{
     const order=await customerOrder(request)
     if(!order)return reply.code(404).send({error:'order_not_found'})
-    const result=await pool.query(`select id,order_id,amount,currency,method,status,customer_reference,submitted_at,verified_at,created_at
-      from app.payments where tenant_id=$1 and order_id=$2 order by created_at desc limit 1`,[order.tenant_id,order.id])
+    const result=await pool.query(`select p.id,p.order_id,p.amount,p.currency,p.method,p.status,p.customer_reference,p.submitted_at,p.verified_at,p.created_at,
+      verifier.display_name verified_by_name
+      from app.payments p left join app.users verifier on verifier.id=p.verified_by
+      where p.tenant_id=$1 and p.order_id=$2 order by p.created_at desc limit 1`,[order.tenant_id,order.id])
     return {payment:result.rows[0]||null}
   })
 

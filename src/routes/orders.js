@@ -123,7 +123,7 @@ export async function orderRoutes(app) {
       if(!['pending','submitted'].includes(current.rows[0].status)) return reply.code(409).send({error:'payment_already_processed'})
       const allowed=await client.query("select app.has_permission($1,'payments.verify',$2,$3) allowed",[request.context.tenantId,current.rows[0].restaurant_id,current.rows[0].outlet_id])
       if(!allowed.rows[0]?.allowed) return reply.code(403).send({error:'permission_denied'})
-      const {rows}=await client.query(`update app.payments set status=$3,verified_at=case when $3='verified' then now() else null end,verified_by=case when $3='verified' then $4 else null end where tenant_id=$1 and id=$2 returning *`,[request.context.tenantId,id,body.status,request.context.userId])
+      const {rows}=await client.query(`update app.payments set status=$3,verified_at=case when $3='verified' then now() else null end,verified_by=case when $3='verified' then $4::uuid else null::uuid end where tenant_id=$1 and id=$2 returning *`,[request.context.tenantId,id,body.status,request.context.userId])
       await client.query('insert into app.payment_events(tenant_id,payment_id,event_type,status,actor_user_id) values($1,$2,$3,$4,$5)',[request.context.tenantId,id,'reviewed',body.status,request.context.userId])
       return rows[0]
     })
