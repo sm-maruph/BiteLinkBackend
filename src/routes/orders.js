@@ -88,16 +88,28 @@ export async function orderRoutes(app) {
     return withTransaction(request.context, async (client) => {
       const current = await client.query('select * from app.orders where tenant_id=$1 and id=$2 for update', [request.context.tenantId, id])
       if (!current.rows[0]) return reply.code(404).send({ error: 'order_not_found' })
-      const transitions={pending:{confirmed:'orders.approve',rejected:'orders.approve',cancelled:'orders.approve'},confirmed:{preparing:'orders.cook',cancelled:'orders.approve'},preparing:{confirmed:'orders.cook',ready:'orders.ready',cancelled:'orders.approve'},ready:{preparing:'orders.ready',serving:'orders.serve',served:'orders.serve'},serving:{ready:'orders.serve',served:'orders.serve'},served:{ready:'orders.serve',completed:'orders.complete'}}
+      const transitions={pending:{confirmed:'orders.approve',rejected:'orders.approve',cancelled:'orders.approve'},confirmed:{preparing:'orders.cook',cancelled:'orders.approve'},preparing:{confirmed:'orders.cook',ready:'orders.ready',cancelled:'orders.approve'},ready:{serving:'orders.serve',served:'orders.serve'},serving:{served:'orders.serve'},served:{completed:'orders.complete'}}
       const requiredPermission=transitions[current.rows[0].status]?.[body.status]
       if (!requiredPermission) return reply.code(409).send({error:'invalid_order_status_transition',from:current.rows[0].status,to:body.status})
       const allowed = await client.query('select app.has_permission($1,$2,$3,$4) allowed', [request.context.tenantId,requiredPermission,current.rows[0].restaurant_id,current.rows[0].outlet_id])
       if (!allowed.rows[0].allowed) return reply.code(403).send({ error: 'permission_denied' })
-      const { rows } = await client.query(`update app.orders set status=$3, confirmed_at=case when $3='confirmed' then now() else confirmed_at end, completed_at=case when $3='completed' then now() else completed_at end where tenant_id=$1 and id=$2 returning *`, [request.context.tenantId, id, body.status])
+      const estimate=body.estimatedMinutes??(body.status==='confirmed'?20:null)
+      const { rows } = await client.query(`update app.orders set status=$3, confirmed_at=case when $3='confirmed' then now() else confirmed_at end, completed_at=case when $3='completed' then now() else completed_at end,estimated_ready_at=case when $4::int is not null then now()+($4::text||' minutes')::interval else estimated_ready_at end where tenant_id=$1 and id=$2 returning *`, [request.context.tenantId, id, body.status,estimate])
       await client.query('insert into app.order_status_history (tenant_id,order_id,from_status,to_status,changed_by,note) values ($1,$2,$3,$4,$5,$6)', [request.context.tenantId, id, current.rows[0].status, body.status, request.context.userId, body.note])
       if(body.status==='confirmed') await client.query("select app.notify_order_staff($1,'orders.cook','order_approved','Order approved for kitchen')",[id])
       if(body.status==='ready') await client.query("select app.notify_order_staff($1,'orders.serve','order_ready','Order ready to serve')",[id])
       if(body.status==='served') await client.query("select app.notify_order_staff($1,'orders.complete','order_served','Order served')",[id])
+      return rows[0]
+    })
+  })
+
+  app.patch('/orders/:id/estimate',async(request,reply)=>{
+    const id=parse(uuid,request.params.id),body=parse(z.object({minutes:z.coerce.number().int().min(1).max(240).optional(),addMinutes:z.coerce.number().int().min(1).max(60).optional()}).refine(value=>(value.minutes?1:0)+(value.addMinutes?1:0)===1),request.body)
+    return withTransaction(request.context,async client=>{
+      const current=await client.query('select * from app.orders where tenant_id=$1 and id=$2 for update',[request.context.tenantId,id]);if(!current.rows[0])return reply.code(404).send({error:'order_not_found'})
+      if(!['confirmed','preparing'].includes(current.rows[0].status))return reply.code(409).send({error:'estimate_not_editable'})
+      const allowed=await client.query("select app.has_permission($1,'orders.cook',$2,$3) allowed",[request.context.tenantId,current.rows[0].restaurant_id,current.rows[0].outlet_id]);if(!allowed.rows[0]?.allowed)return reply.code(403).send({error:'permission_denied'})
+      const {rows}=body.minutes?await client.query("update app.orders set estimated_ready_at=now()+($3::text||' minutes')::interval where tenant_id=$1 and id=$2 returning *",[request.context.tenantId,id,body.minutes]):await client.query("update app.orders set estimated_ready_at=greatest(coalesce(estimated_ready_at,now()),now())+($3::text||' minutes')::interval where tenant_id=$1 and id=$2 returning *",[request.context.tenantId,id,body.addMinutes])
       return rows[0]
     })
   })

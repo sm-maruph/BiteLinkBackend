@@ -48,9 +48,9 @@ export async function publicRoutes(app) {
       const existing=await client.query(`select * from app.payments where tenant_id=$1 and order_id=$2 and status in ('pending','submitted','verified') order by created_at desc limit 1`,[order.tenant_id,order.id])
       if(existing.rows[0]){await client.query('commit');return existing.rows[0]}
       const created=await client.query(`insert into app.payments(tenant_id,restaurant_id,outlet_id,session_id,order_id,amount,method,status,customer_reference,submitted_at,metadata)
-        values($1,$2,$3,$4,$5,$6,$7,'submitted',$8,now(),jsonb_build_object('tableNumber',$9,'orderNumber',$10)) returning *`,
+        values($1,$2,$3,$4,$5,$6,$7,'submitted',$8,now(),jsonb_build_object('tableNumber',$9::text,'orderNumber',$10::int)) returning *`,
         [order.tenant_id,order.restaurant_id,order.outlet_id,order.session_id,order.id,order.grand_total,parsed.data.method,parsed.data.reference,order.table_number,order.order_number])
-      await client.query(`insert into app.payment_events(tenant_id,payment_id,event_type,status,payload) values($1,$2,'customer_submitted','submitted',jsonb_build_object('reference',$3))`,[order.tenant_id,created.rows[0].id,parsed.data.reference])
+      await client.query(`insert into app.payment_events(tenant_id,payment_id,event_type,status,payload) values($1,$2,'customer_submitted','submitted',jsonb_build_object('reference',$3::text))`,[order.tenant_id,created.rows[0].id,parsed.data.reference])
       await client.query('commit')
       return reply.code(201).send(created.rows[0])
     }catch(error){await client.query('rollback');throw error}finally{client.release()}
@@ -62,7 +62,7 @@ export async function publicRoutes(app) {
     if(!z.string().uuid().safeParse(customerToken).success)return {items:[]}
     const customerTokenHash=createHash('sha256').update(customerToken).digest('hex')
     const result = await pool.query(
-      `select ord.id,ord.order_number,ord.status,ord.subtotal,ord.discount_total,ord.grand_total,ord.placed_at,
+      `select ord.id,ord.order_number,ord.status,ord.subtotal,ord.discount_total,ord.grand_total,ord.placed_at,ord.estimated_ready_at,
               coalesce(jsonb_agg(jsonb_build_object('id',oi.menu_item_id,'name',oi.item_name_snapshot,'price',oi.unit_price_snapshot,'quantity',oi.quantity)
                 order by oi.created_at) filter (where oi.id is not null),'[]') items
          from app.restaurants r join app.outlets o on o.tenant_id=r.tenant_id and o.restaurant_id=r.id
@@ -82,7 +82,7 @@ export async function publicRoutes(app) {
     if(!z.string().uuid().safeParse(customerToken).success)return reply.code(404).send({error:'order_not_found'})
     const customerTokenHash=createHash('sha256').update(customerToken).digest('hex')
     const result = await pool.query(
-      `select ord.id,ord.order_number,ord.status,ord.subtotal,ord.discount_total,ord.grand_total,ord.placed_at
+      `select ord.id,ord.order_number,ord.status,ord.subtotal,ord.discount_total,ord.grand_total,ord.placed_at,ord.estimated_ready_at
          from app.restaurants r join app.outlets o on o.tenant_id=r.tenant_id and o.restaurant_id=r.id
          join app.dining_tables t on t.tenant_id=r.tenant_id and t.restaurant_id=r.id and t.outlet_id=o.id
          join app.orders ord on ord.tenant_id=r.tenant_id and ord.restaurant_id=r.id and ord.outlet_id=o.id and ord.table_id=t.id

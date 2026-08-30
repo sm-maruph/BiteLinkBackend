@@ -21,6 +21,7 @@ export const orderBody = z.object({
 export const statusBody = z.object({
   status: z.enum(['confirmed', 'preparing', 'ready', 'serving', 'served', 'completed', 'cancelled', 'rejected']),
   note: z.string().max(500).optional(),
+  estimatedMinutes: z.coerce.number().int().min(1).max(240).optional(),
 })
 export const roleBody = z.object({ code:z.string().regex(/^[a-z][a-z0-9_]{1,49}$/), name:z.string().trim().min(2).max(100), description:z.string().trim().max(500).optional(), scope:z.enum(['tenant','restaurant','outlet']), permissions:z.array(z.string().min(1).max(100)).min(1).max(100), restaurantId:uuid.optional(), outletId:uuid.optional() })
 export const roleAssignmentBody = z.object({ membershipId:uuid, roleId:uuid, password:z.string().min(8).max(128), restaurantId:uuid.optional(), outletId:uuid.optional() })
