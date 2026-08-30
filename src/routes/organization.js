@@ -1,5 +1,5 @@
 import { withTransaction } from '../db.js'
-import { outletBody,parse,restaurantBody,themeBody,uuid } from '../schemas.js'
+import { designSettingsBody,outletBody,parse,restaurantBody,themeBody,uuid } from '../schemas.js'
 
 export async function organizationRoutes(app){
   app.post('/restaurants',async(request,reply)=>withTransaction(request.context,async client=>{
@@ -30,6 +30,20 @@ export async function organizationRoutes(app){
     const allowed=await client.query("select app.has_permission($1,'restaurant.manage',$2,null) allowed",[request.context.tenantId,id])
     if(!allowed.rows[0]?.allowed)return reply.code(403).send({error:'permission_denied'})
     const {rows}=await client.query('update app.restaurant_themes set template_key=$3,theme_key=$4,published_at=now() where tenant_id=$1 and restaurant_id=$2 returning *',[request.context.tenantId,id,body.templateKey,body.themeKey])
+    return rows[0]||reply.code(404).send({error:'restaurant_not_found'})
+  }))
+  app.get('/restaurants/:id/design-settings',async(request,reply)=>withTransaction(request.context,async client=>{
+    const id=parse(uuid,request.params.id)
+    const allowed=await client.query("select app.has_permission($1,'restaurant.manage',$2,null) allowed",[request.context.tenantId,id])
+    if(!allowed.rows[0]?.allowed)return reply.code(403).send({error:'permission_denied'})
+    const {rows}=await client.query('select coalesce(design_settings,\'{}\'::jsonb) design_settings from app.restaurant_themes where tenant_id=$1 and restaurant_id=$2',[request.context.tenantId,id])
+    return rows[0]||reply.code(404).send({error:'restaurant_not_found'})
+  }))
+  app.patch('/restaurants/:id/design-settings',async(request,reply)=>withTransaction(request.context,async client=>{
+    const id=parse(uuid,request.params.id),body=parse(designSettingsBody,request.body)
+    const allowed=await client.query("select app.has_permission($1,'restaurant.manage',$2,null) allowed",[request.context.tenantId,id])
+    if(!allowed.rows[0]?.allowed)return reply.code(403).send({error:'permission_denied'})
+    const {rows}=await client.query(`update app.restaurant_themes set design_settings=coalesce(design_settings,'{}'::jsonb)||jsonb_build_object('marqueeItems',$3::jsonb),published_at=now(),updated_at=now() where tenant_id=$1 and restaurant_id=$2 returning design_settings`,[request.context.tenantId,id,JSON.stringify(body.marqueeItems)])
     return rows[0]||reply.code(404).send({error:'restaurant_not_found'})
   }))
   app.patch('/restaurants/:id/logo',async(request,reply)=>withTransaction(request.context,async client=>{
