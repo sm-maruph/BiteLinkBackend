@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { withTransaction } from '../db.js'
 import { orderBody, pagination, parse, statusBody, uuid } from '../schemas.js'
 import { z } from 'zod'
+import { publishRealtime } from '../realtime.js'
 
 const hashBody = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 
@@ -58,8 +59,7 @@ export async function orderRoutes(app) {
       if (!outlet.rows[0]) return reply.code(404).send({ error: 'outlet_not_found' })
       const tax = Number((subtotal * Number(outlet.rows[0].tax_rate)).toFixed(2))
       const service = Number((subtotal * Number(outlet.rows[0].service_charge_rate)).toFixed(2))
-      await client.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [`${request.context.tenantId}:${body.outletId}:orders`])
-      const orderNumber = await client.query('select coalesce(max(order_number), 0) + 1 value from app.orders where tenant_id=$1 and outlet_id=$2', [request.context.tenantId, body.outletId])
+      const orderNumber = await client.query('select app.next_order_number($1,$2) value', [request.context.tenantId, body.outletId])
       const created = await client.query(
         `insert into app.orders (tenant_id, restaurant_id, outlet_id, table_id, session_id, order_number,
           subtotal, tax_total, service_charge_total, grand_total, notes, created_by)
@@ -99,6 +99,7 @@ export async function orderRoutes(app) {
       if(body.status==='confirmed') await client.query("select app.notify_order_staff($1,'orders.cook','order_approved','Order approved for kitchen')",[id])
       if(body.status==='ready') await client.query("select app.notify_order_staff($1,'orders.serve','order_ready','Order ready to serve')",[id])
       if(body.status==='served') await client.query("select app.notify_order_staff($1,'orders.complete','order_served','Order served')",[id])
+      await publishRealtime(client,{type:'order.status',tenantId:request.context.tenantId,restaurantId:current.rows[0].restaurant_id,outletId:current.rows[0].outlet_id,orderId:id,status:body.status,customerTokenHash:current.rows[0].customer_token_hash})
       return rows[0]
     })
   })
@@ -118,13 +119,14 @@ export async function orderRoutes(app) {
     const id = parse(uuid, request.params.id)
     const body = parse(z.object({status:z.enum(['verified','rejected'])}), request.body)
     return withTransaction(request.context, async (client) => {
-      const current=await client.query('select * from app.payments where tenant_id=$1 and id=$2 for update',[request.context.tenantId,id])
+      const current=await client.query('select p.*,o.customer_token_hash from app.payments p left join app.orders o on o.tenant_id=p.tenant_id and o.id=p.order_id where p.tenant_id=$1 and p.id=$2 for update of p',[request.context.tenantId,id])
       if(!current.rows[0]) return reply.code(404).send({error:'payment_not_found'})
       if(!['pending','submitted'].includes(current.rows[0].status)) return reply.code(409).send({error:'payment_already_processed'})
       const allowed=await client.query("select app.has_permission($1,'payments.verify',$2,$3) allowed",[request.context.tenantId,current.rows[0].restaurant_id,current.rows[0].outlet_id])
       if(!allowed.rows[0]?.allowed) return reply.code(403).send({error:'permission_denied'})
       const {rows}=await client.query(`update app.payments set status=$3,verified_at=case when $3='verified' then now() else null end,verified_by=case when $3='verified' then $4::uuid else null::uuid end where tenant_id=$1 and id=$2 returning *`,[request.context.tenantId,id,body.status,request.context.userId])
       await client.query('insert into app.payment_events(tenant_id,payment_id,event_type,status,actor_user_id) values($1,$2,$3,$4,$5)',[request.context.tenantId,id,'reviewed',body.status,request.context.userId])
+      await publishRealtime(client,{type:'payment.status',tenantId:request.context.tenantId,restaurantId:current.rows[0].restaurant_id,outletId:current.rows[0].outlet_id,paymentId:id,status:body.status,customerTokenHash:current.rows[0].customer_token_hash})
       return rows[0]
     })
   })

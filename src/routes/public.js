@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { pool, withPublicTransaction } from '../db.js'
+import { requireTableToken } from '../modules/guest/table-token.js'
+import { publishRealtime } from '../realtime.js'
 
 const publicOrderBody = z.object({
   items: z.array(z.object({ menuItemId: z.string().uuid(), quantity: z.number().int().min(1).max(99) })).min(1).max(100),
@@ -10,8 +12,11 @@ const publicPaymentBody=z.object({
   method:z.enum(['bangla_qr','cash','card','other']),
   reference:z.string().trim().min(2).max(160),
 })
+const requestHash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex')
+const validIdempotencyKey=request=>{const key=request.headers['idempotency-key'];return typeof key==='string'&&key.length>=16&&key.length<=200?key:null}
 
 export async function publicRoutes(app) {
+  app.addHook('preHandler', requireTableToken)
   const customerOrder = async (request) => {
     const customerToken=String(request.headers['x-customer-session']||'')
     if(!z.string().uuid().safeParse(customerToken).success)return null
@@ -46,13 +51,20 @@ export async function publicRoutes(app) {
     const client=await pool.connect()
     try{
       await client.query('begin')
+      const idempotencyKey=validIdempotencyKey(request)
+      if(!idempotencyKey){await client.query('rollback');return reply.code(400).send({error:'valid_idempotency_key_required'})}
+      const hash=requestHash({orderId:order.id,...parsed.data})
+      const reserved=await client.query(`insert into app.idempotency_keys(tenant_id,idempotency_key,request_hash,expires_at) values($1,$2,$3,now()+interval '24 hours') on conflict do nothing returning idempotency_key`,[order.tenant_id,idempotencyKey,hash])
+      if(!reserved.rows[0]){const prior=await client.query('select request_hash,response_status,response_body from app.idempotency_keys where tenant_id=$1 and idempotency_key=$2',[order.tenant_id,idempotencyKey]);await client.query('commit');if(prior.rows[0]?.request_hash!==hash)return reply.code(409).send({error:'idempotency_key_reused'});return reply.code(prior.rows[0]?.response_status||409).send(prior.rows[0]?.response_body||{error:'request_in_progress'})}
       await client.query('select pg_advisory_xact_lock(hashtextextended($1,0))',[`${order.tenant_id}:${order.id}:payment`])
       const existing=await client.query(`select * from app.payments where tenant_id=$1 and order_id=$2 and status in ('pending','submitted','verified') order by created_at desc limit 1`,[order.tenant_id,order.id])
-      if(existing.rows[0]){await client.query('commit');return existing.rows[0]}
+      if(existing.rows[0]){await client.query('update app.idempotency_keys set response_status=200,response_body=$3 where tenant_id=$1 and idempotency_key=$2',[order.tenant_id,idempotencyKey,existing.rows[0]]);await client.query('commit');return existing.rows[0]}
       const created=await client.query(`insert into app.payments(tenant_id,restaurant_id,outlet_id,session_id,order_id,amount,method,status,customer_reference,submitted_at,metadata)
         values($1,$2,$3,$4,$5,$6,$7,'submitted',$8,now(),jsonb_build_object('tableNumber',$9::text,'orderNumber',$10::int)) returning *`,
         [order.tenant_id,order.restaurant_id,order.outlet_id,order.session_id,order.id,order.grand_total,parsed.data.method,parsed.data.reference,order.table_number,order.order_number])
       await client.query(`insert into app.payment_events(tenant_id,payment_id,event_type,status,payload) values($1,$2,'customer_submitted','submitted',jsonb_build_object('reference',$3::text))`,[order.tenant_id,created.rows[0].id,parsed.data.reference])
+      await publishRealtime(client,{type:'payment.submitted',tenantId:order.tenant_id,restaurantId:order.restaurant_id,outletId:order.outlet_id,paymentId:created.rows[0].id,customerTokenHash:order.customer_token_hash})
+      await client.query('update app.idempotency_keys set response_status=201,response_body=$3 where tenant_id=$1 and idempotency_key=$2',[order.tenant_id,idempotencyKey,created.rows[0]])
       await client.query('commit')
       return reply.code(201).send(created.rows[0])
     }catch(error){await client.query('rollback');throw error}finally{client.release()}
@@ -115,6 +127,11 @@ export async function publicRoutes(app) {
       )
       if (!location.rows[0]) { await client.query('rollback'); return reply.code(404).send({ error: 'table_not_found' }) }
       const place = location.rows[0]
+      const idempotencyKey=validIdempotencyKey(request)
+      if(!idempotencyKey){await client.query('rollback');return reply.code(400).send({error:'valid_idempotency_key_required'})}
+      const hash=requestHash({tableId:place.table_id,customerTokenHash,...parsed.data})
+      const reserved=await client.query(`insert into app.idempotency_keys(tenant_id,idempotency_key,request_hash,expires_at) values($1,$2,$3,now()+interval '24 hours') on conflict do nothing returning idempotency_key`,[place.tenant_id,idempotencyKey,hash])
+      if(!reserved.rows[0]){const prior=await client.query('select request_hash,response_status,response_body from app.idempotency_keys where tenant_id=$1 and idempotency_key=$2',[place.tenant_id,idempotencyKey]);await client.query('commit');if(prior.rows[0]?.request_hash!==hash)return reply.code(409).send({error:'idempotency_key_reused'});return reply.code(prior.rows[0]?.response_status||409).send(prior.rows[0]?.response_body||{error:'request_in_progress'})}
       const ids = parsed.data.items.map((item) => item.menuItemId)
       const menu = await client.query(
         `select i.id,i.name,i.description,coalesce(omi.price_override,i.base_price) price,
@@ -147,8 +164,7 @@ export async function publicRoutes(app) {
       const offers=await client.query(`select offer_type,rules from app.offers where tenant_id=$1 and restaurant_id=$2 and (outlet_id is null or outlet_id=$3) and is_active and (starts_at is null or starts_at<=now()) and (ends_at is null or ends_at>=now())`,[place.tenant_id,place.restaurant_id,place.outlet_id])
       const discountFor=line=>{const matching=offers.rows.filter(offer=>offer.offer_type!=='combo'&&(offer.rules?.menuItemIds||[]).includes(line.menuItemId)).flatMap(offer=>offer.rules?.tiers||[]).filter(tier=>line.quantity>=Number(tier.quantity));const percent=matching.length?Math.max(...matching.map(tier=>Number(tier.percent))):0;return {percent,amount:Number((Number(line.price)*line.quantity*percent/100).toFixed(2))}}
       const discountedLines=lines.map(line=>({...line,discount:discountFor(line)})),tierDiscount=discountedLines.reduce((sum,line)=>sum+line.discount.amount,0),comboDiscount=offers.rows.filter(offer=>offer.offer_type==='combo').reduce((sum,offer)=>{const comboLines=(offer.rules?.menuItemIds||[]).map(id=>lines.find(line=>line.menuItemId===id));if(comboLines.some(line=>!line))return sum;const uses=Math.min(...comboLines.map(line=>line.quantity)),regular=comboLines.reduce((total,line)=>total+Number(line.price),0);return sum+Math.max(0,regular-Number(offer.rules.comboPrice||regular))*uses},0),discount=Number(Math.max(tierDiscount,comboDiscount).toFixed(2))
-      await client.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [`${place.tenant_id}:${place.outlet_id}:orders`])
-      const number = await client.query('select coalesce(max(order_number),0)+1 value from app.orders where tenant_id=$1 and outlet_id=$2', [place.tenant_id, place.outlet_id])
+      const number = await client.query('select app.next_order_number($1,$2) value', [place.tenant_id, place.outlet_id])
       const created = await client.query(
         `insert into app.orders (tenant_id,restaurant_id,outlet_id,table_id,session_id,order_number,subtotal,discount_total,tax_total,service_charge_total,grand_total,notes,customer_token_hash)
          values ($1,$2,$3,$4,$5,$6,$7,$8,0,0,$9,$10,$11) returning *`,
@@ -159,8 +175,11 @@ export async function publicRoutes(app) {
          values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [place.tenant_id, created.rows[0].id, line.menuItemId, line.name, line.description, line.price, line.quantity, line.discount.amount, Number(line.price) * line.quantity-line.discount.amount],
       )
+      await publishRealtime(client,{type:'order.placed',tenantId:place.tenant_id,restaurantId:place.restaurant_id,outletId:place.outlet_id,orderId:created.rows[0].id,customerTokenHash})
+      const response={...created.rows[0],items:discountedLines}
+      await client.query('update app.idempotency_keys set response_status=201,response_body=$3 where tenant_id=$1 and idempotency_key=$2',[place.tenant_id,idempotencyKey,response])
       await client.query('commit')
-      return reply.code(201).send({ ...created.rows[0], items: discountedLines })
+      return reply.code(201).send(response)
     } catch (error) {
       await client.query('rollback')
       throw error

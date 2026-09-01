@@ -12,6 +12,7 @@ const schema = z.object({
   DATABASE_SSL: booleanFromString.default('true'),
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(50).default(10),
   ACCESS_TOKEN_SECRET: z.string().min(32),
+  TABLE_QR_SECRET: z.string().min(32),
   ACCESS_TOKEN_TTL: z.string().default('15m'),
   REFRESH_TOKEN_DAYS: z.coerce.number().int().min(1).max(365).default(30),
   COOKIE_SECURE: booleanFromString.default('false'),
@@ -25,6 +26,8 @@ const schema = z.object({
   LOCAL_STORAGE_PATH: z.string().default('./uploads'),
   LOCAL_STORAGE_PUBLIC_URL: z.string().url().default('http://127.0.0.1:4000/uploads'),
   ALLOW_DEMO_AUTH: booleanFromString.default('false'),
+  DATABASE_SSL_REJECT_UNAUTHORIZED: booleanFromString.default('true'),
+  TRUST_PROXY: booleanFromString.default('false'),
 }).superRefine((value, context) => {
   if (value.STORAGE_PROVIDER === 'supabase' && (!value.SUPABASE_URL || !value.SUPABASE_SERVICE_ROLE_KEY)) {
     context.addIssue({ code: 'custom', message: 'Supabase storage requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY' })

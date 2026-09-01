@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import pg from 'pg'
 
 if(!process.env.DATABASE_URL)throw new Error('DATABASE_URL is missing')
-const pool=new pg.Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.DATABASE_SSL==='false'?false:{rejectUnauthorized:false},max:1})
+const pool=new pg.Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.DATABASE_SSL==='false'?false:{rejectUnauthorized:process.env.DATABASE_SSL_REJECT_UNAUTHORIZED!=='false'},max:1})
 const migrations=[
   {name:'009_staff_temporary_credentials.sql',check:"select exists(select 1 from information_schema.columns where table_schema='app' and table_name='user_credentials' and column_name='must_change_password') applied"},
   {name:'010_outlet_limits_and_approval.sql',check:"select exists(select 1 from billing.plan_entitlements where feature_key='outlets.max') applied"},
@@ -15,5 +15,6 @@ const migrations=[
   {name:'015_order_staff_visibility.sql',check:"select not exists(select 1 from app.roles r join app.role_permissions rp on rp.role_id=r.id where r.code='order_staff' and rp.permission_code in ('orders.serve','orders.complete')) applied"},
   {name:'016_customer_bill_payments.sql',check:"select exists(select 1 from information_schema.columns where table_schema='app' and table_name='payments' and column_name='order_id') applied"},
   {name:'017_order_eta.sql',check:"select exists(select 1 from information_schema.columns where table_schema='app' and table_name='orders' and column_name='estimated_ready_at') applied"},
+  {name:'018_production_order_scaling.sql',check:"select exists(select 1 from information_schema.tables where table_schema='app' and table_name='outlet_order_counters') applied"},
 ]
 try{for(const migration of migrations){const state=await pool.query(migration.check);if(state.rows[0].applied){console.log(`skip ${migration.name}`);continue}const sql=await readFile(resolve('../BiteLinkQR/database/migrations',migration.name),'utf8');await pool.query(sql);console.log(`applied ${migration.name}`)}}finally{await pool.end()}

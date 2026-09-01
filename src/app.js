@@ -17,6 +17,7 @@ import { workspaceRoutes } from './routes/workspace.js'
 import { staffRoutes } from './routes/staff.js'
 import { organizationRoutes } from './routes/organization.js'
 import { platformRoutes } from './routes/platform.js'
+import { registerRealtime } from './realtime.js'
 
 export async function buildApp() {
   const frontendOrigins = [...new Set([
@@ -26,11 +27,12 @@ export async function buildApp() {
 
   const app = Fastify({
     logger: config.NODE_ENV === 'development' ? { transport: { target: 'pino-pretty' } } : true,
-    trustProxy: true,
+    trustProxy: config.TRUST_PROXY,
     bodyLimit: 1_048_576,
   })
 
   app.decorate('db', pool)
+  await registerRealtime(app)
   await app.register(helmet)
   await app.register(cookie)
   await app.register(multipart, { limits: { files: 1, fileSize: config.STORAGE_MAX_BYTES } })
@@ -38,13 +40,17 @@ export async function buildApp() {
     origin: frontendOrigins,
     credentials: true,
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['authorization', 'content-type', 'x-tenant-id', 'idempotency-key', 'x-demo-user-id', 'x-customer-session'],
+    allowedHeaders: ['authorization', 'content-type', 'x-tenant-id', 'idempotency-key', 'x-demo-user-id', 'x-customer-session', 'x-table-token'],
   })
   await app.register(rateLimit, { max: 120, timeWindow: '1 minute' })
 
+  app.get('/health/live', async () => ({ status: 'ok' }))
   app.get('/health', async () => {
     await pool.query('select 1')
     return { status: 'ok' }
+  })
+  app.get('/health/ready', async (request,reply) => {
+    try{await pool.query('select 1');return {status:'ready'}}catch{return reply.code(503).send({status:'not_ready'})}
   })
 
   await app.register(authRoutes, { prefix: '/api/auth' })
