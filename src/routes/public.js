@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { pool, withPublicTransaction } from '../db.js'
 import { requireTableToken } from '../modules/guest/table-token.js'
 import { publishRealtime } from '../realtime.js'
+import { requireOnlineOutlet } from '../modules/platform-access.js'
 
 const publicOrderBody = z.object({
   items: z.array(z.object({ menuItemId: z.string().uuid(), quantity: z.number().int().min(1).max(99) })).min(1).max(100),
@@ -16,6 +17,7 @@ const requestHash=value=>createHash('sha256').update(JSON.stringify(value)).dige
 const validIdempotencyKey=request=>{const key=request.headers['idempotency-key'];return typeof key==='string'&&key.length>=16&&key.length<=200?key:null}
 
 export async function publicRoutes(app) {
+  app.addHook('preHandler', requireOnlineOutlet)
   app.addHook('preHandler', requireTableToken)
   const customerOrder = async (request) => {
     const customerToken=String(request.headers['x-customer-session']||'')

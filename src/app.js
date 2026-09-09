@@ -16,8 +16,10 @@ import { contextRoutes } from './routes/context.js'
 import { workspaceRoutes } from './routes/workspace.js'
 import { staffRoutes } from './routes/staff.js'
 import { organizationRoutes } from './routes/organization.js'
+import { operationsRoutes } from './routes/operations.js'
 import { platformRoutes } from './routes/platform.js'
 import { registerRealtime } from './realtime.js'
+import { registerApiMetrics } from './modules/platform-access.js'
 
 export async function buildApp() {
   const frontendOrigins = [...new Set([
@@ -32,6 +34,7 @@ export async function buildApp() {
   })
 
   app.decorate('db', pool)
+  registerApiMetrics(app)
   await registerRealtime(app)
   await app.register(helmet)
   await app.register(cookie)
@@ -71,11 +74,13 @@ export async function buildApp() {
     await api.register(staffRoutes)
     await api.register(organizationRoutes)
     await api.register(storageRoutes)
+    await api.register(operationsRoutes, {prefix:'/support'})
   }, { prefix: '/api/v1' })
 
   app.setErrorHandler((error, request, reply) => {
     request.log.error({ err: error }, 'request failed')
     if (error.code === '23505') return reply.code(409).send({ error: 'conflict' })
+    if (error.code === 'P0001' && error.message === 'outlet_offline') return reply.code(403).send({error:'outlet_offline'})
     if (error.code === '23503') return reply.code(409).send({ error: 'referenced_record_invalid' })
     if (error.statusCode && error.statusCode < 500) {
       return reply.code(error.statusCode).send({ error: error.message, details: error.details })

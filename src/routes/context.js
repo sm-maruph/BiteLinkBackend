@@ -22,6 +22,7 @@ export async function contextRoutes(app) {
          join app.role_permissions rp on rp.role_id=mr.role_id
         where m.tenant_id=$1 and m.user_id=$2 and m.status='active'`, [request.context.tenantId, request.context.userId],
     )
-    return { tenantId: request.context.tenantId, restaurants: restaurants.rows, roles: roles.rows, permissions: permissions.rows.map(row => row.code) }
+    const access = await client.query('select billing.tenant_access_allowed($1) allowed',[request.context.tenantId])
+    return { subscriptionValid: access.rows[0].allowed, tenantId: request.context.tenantId, restaurants: restaurants.rows, roles: roles.rows, permissions: permissions.rows.map(row => row.code) }
   }))
 }

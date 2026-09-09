@@ -78,7 +78,7 @@ async function provisionAccount(db, input, requireEmpty) {
     const membership = await db.query(`insert into app.tenant_memberships(tenant_id,user_id,status,joined_at) values($1,$2,'active',now()) returning *`, [tenant.rows[0].id, user.rows[0].id])
     const ownerRole = await db.query("select id from app.roles where tenant_id=$1 and code='owner'", [tenant.rows[0].id])
     await db.query('insert into app.membership_roles(tenant_id,membership_id,role_id,granted_by) values($1,$2,$3,$4)', [tenant.rows[0].id, membership.rows[0].id, ownerRole.rows[0].id, user.rows[0].id])
-    const restaurant = await db.query(`insert into app.restaurants(tenant_id,name,slug,status) values($1,$2,$3,'active') returning *`, [tenant.rows[0].id, input.restaurantName, input.restaurantSlug])
+    const restaurant = await db.query(`insert into app.restaurants(tenant_id,name,slug,status) values($1,$2,$3,$4) returning *`, [tenant.rows[0].id, input.restaurantName, input.restaurantSlug, requireEmpty ? 'active' : 'draft'])
     await db.query(`insert into app.restaurant_profiles(tenant_id,restaurant_id,tagline,description,cover_image_url,phone,email,chef_name)
       values($1,$2,$3,$4,$5,$6,$7,$8)`, [tenant.rows[0].id, restaurant.rows[0].id, input.profile?.tagline||null, input.profile?.description||null, input.profile?.coverImageUrl||null, input.profile?.phone||null, input.profile?.email||null, input.profile?.chefName||null])
     await db.query("insert into app.restaurant_themes(tenant_id,restaurant_id,template_key,theme_key,published_at) values($1,$2,$3,$4,now())", [tenant.rows[0].id, restaurant.rows[0].id,input.templateKey,input.themeKey])

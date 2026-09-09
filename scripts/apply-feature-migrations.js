@@ -16,5 +16,7 @@ const migrations=[
   {name:'016_customer_bill_payments.sql',check:"select exists(select 1 from information_schema.columns where table_schema='app' and table_name='payments' and column_name='order_id') applied"},
   {name:'017_order_eta.sql',check:"select exists(select 1 from information_schema.columns where table_schema='app' and table_name='orders' and column_name='estimated_ready_at') applied"},
   {name:'018_production_order_scaling.sql',check:"select exists(select 1 from information_schema.tables where table_schema='app' and table_name='outlet_order_counters') applied"},
+  {name:'019_platform_control.sql',check:"select to_regclass('app.platform_audit') is not null applied"},
+  {name:'020_platform_operations.sql',check:"select to_regclass('app.support_tickets') is not null applied"},
 ]
 try{for(const migration of migrations){const state=await pool.query(migration.check);if(state.rows[0].applied){console.log(`skip ${migration.name}`);continue}const sql=await readFile(resolve('../BiteLinkQR/database/migrations',migration.name),'utf8');await pool.query(sql);console.log(`applied ${migration.name}`)}}finally{await pool.end()}
